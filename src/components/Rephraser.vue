@@ -1,5 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
+import { faTrash, faXmark, faCopy, faCheck, faSpinner } from '@fortawesome/free-solid-svg-icons'
+import { ApiService } from '../services/api'
+import moment from 'moment'
 
 interface HistoryItem {
   id: string;
@@ -8,15 +12,19 @@ interface HistoryItem {
   output: string;
   mood: string;
   context: string;
+  length: string;
 }
 
 const inputText = ref('')
 const outputText = ref('')
 const selectedMood = ref('neutral')
 const selectedContext = ref('general')
+const selectedLength = ref<'short' | 'medium' | 'long'>('medium')
 const isProcessing = ref(false)
 const history = ref<HistoryItem[]>([])
 const showHistory = ref(false)
+const isCopied = ref(false)
+const errorMessage = ref('')
 
 const moods = [
   { value: 'neutral', label: 'Neutral' },
@@ -33,6 +41,12 @@ const contexts = [
   { value: 'creative', label: 'Creative' },
   { value: 'technical', label: 'Technical' }
 ]
+
+const lengthOptions = [
+  { value: 'short' as const, label: 'Short (10-20 chars)' },
+  { value: 'medium' as const, label: 'Medium (30-50 chars)' },
+  { value: 'long' as const, label: 'Long (70-100 chars)' }
+] as const
 
 // Load history from localStorage on component mount
 onMounted(() => {
@@ -69,28 +83,38 @@ const saveHistory = () => {
   localStorage.setItem('rephraseHistory', JSON.stringify(history.value))
 }
 
-const rephraseText = () => {
-  if (!inputText.value.trim()) return
+const rephraseText = async () => {
+  if (!inputText.value.trim()) {
+    errorMessage.value = 'Please enter some text to rephrase'
+    return
+  }
   
-  isProcessing.value = true
-  
-  // Simulate API call with timeout
-  setTimeout(() => {
-    // TODO: Will use these options when we integrate OpenRouter
-    const output = `[${selectedMood.value}/${selectedContext.value}]: ${inputText.value}`
-    outputText.value = output
+  try {
+    errorMessage.value = ''
+    isProcessing.value = true
+    
+    const response = await ApiService.rephraseText({
+      input: inputText.value,
+      mood: selectedMood.value,
+      context: selectedContext.value,
+      length: selectedLength.value
+    })
+    
+    outputText.value = response.output
+    errorMessage.value = ''
     
     // Add to history
     const historyItem: HistoryItem = {
       id: Date.now().toString(),
       timestamp: Date.now(),
       input: inputText.value,
-      output: output,
+      output: outputText.value,
       mood: selectedMood.value,
-      context: selectedContext.value
+      context: selectedContext.value,
+      length: selectedLength.value
     }
     
-    history.value.unshift(historyItem) // Add to beginning of array
+    history.value.unshift(historyItem)
     
     // Limit history to 20 items
     if (history.value.length > 20) {
@@ -100,12 +124,17 @@ const rephraseText = () => {
     // Save to localStorage
     saveHistory()
     
+  } catch (error) {
+    console.error('Error rephrasing text:', error)
+    errorMessage.value = error instanceof Error ? error.message : 'Failed to rephrase text. Please try again.'
+    outputText.value = ''
+  } finally {
     isProcessing.value = false
-  }, 800)
+  }
 }
 
 const formatDate = (timestamp: number): string => {
-  return new Date(timestamp).toLocaleString()
+  return moment(timestamp).fromNow()
 }
 
 const loadHistoryItem = (item: HistoryItem) => {
@@ -113,6 +142,12 @@ const loadHistoryItem = (item: HistoryItem) => {
   outputText.value = item.output
   selectedMood.value = item.mood
   selectedContext.value = item.context
+  selectedLength.value = item.length
+  
+  // Hide history sidebar on mobile view
+  if (window.innerWidth <= 768) {
+    showHistory.value = false
+  }
 }
 
 const clearHistory = () => {
@@ -126,6 +161,23 @@ const toggleHistory = () => {
   showHistory.value = !showHistory.value
 }
 
+const copyToClipboard = async () => {
+  try {
+    await navigator.clipboard.writeText(outputText.value)
+    isCopied.value = true
+    setTimeout(() => {
+      isCopied.value = false
+    }, 2000)
+  } catch (err) {
+    console.error('Failed to copy text:', err)
+  }
+}
+
+const clearInput = () => {
+  inputText.value = ''
+  outputText.value = ''
+  errorMessage.value = ''
+}
 </script>
 
 <template>
@@ -143,13 +195,28 @@ const toggleHistory = () => {
       <div class="form-section">
         <div class="input-group">
           <label for="input-text">Input Text</label>
-          <textarea 
-            id="input-text"
-            v-model="inputText"
-            placeholder="Enter text to rephrase..."
-            class="input-field"
-            rows="4"
-          ></textarea>
+          <div class="input-with-actions">
+            <textarea 
+              id="input-text"
+              v-model="inputText"
+              placeholder="Enter text to rephrase..."
+              class="input-field"
+              rows="4"
+              :disabled="isProcessing"
+            ></textarea>
+            <button 
+              @click="clearInput" 
+              class="clear-button button"
+              :disabled="!inputText.trim() || isProcessing"
+              title="Clear input"
+            >
+              <font-awesome-icon :icon="faTrash" class="icon" />
+            </button>
+          </div>
+          
+          <div v-if="errorMessage" class="error-message">
+            {{ errorMessage }}
+          </div>
         </div>
 
         <div class="options-grid">
@@ -178,23 +245,57 @@ const toggleHistory = () => {
               </option>
             </select>
           </div>
+
+          <div class="option-group">
+            <label for="length">Length</label>
+            <select 
+              id="length" 
+              v-model="selectedLength" 
+              class="select-field"
+            >
+              <option v-for="l in lengthOptions" :key="l.value" :value="l.value">
+                {{ l.label }}
+              </option>
+            </select>
+          </div>
         </div>
 
-        <button 
-          @click="rephraseText" 
-          :disabled="isProcessing || !inputText.trim()"
-          class="rephrase-button button"
-        >
-          <span v-if="isProcessing">Processing...</span>
-          <span v-else>Rephrase</span>
-          <span class="keyboard-shortcut">⌘⏎</span>
-        </button>
-      </div>
+        <div class="action-buttons">
+          <button 
+            @click="rephraseText" 
+            :disabled="isProcessing || !inputText.trim()"
+            class="rephrase-button button"
+          >
+            <span v-if="isProcessing">
+              <font-awesome-icon :icon="faSpinner" class="icon spin" />
+              Processing...
+            </span>
+            <span v-else>
+              Rephrase
+              <span class="keyboard-shortcut">⌘⏎</span>
+            </span>
+          </button>
+        </div>
 
-      <div class="output-section" v-if="outputText">
-        <h2>Output</h2>
-        <div class="output-field card">
-          <pre>{{ outputText }}</pre>
+        <div v-if="errorMessage" class="error-message">
+          {{ errorMessage }}
+        </div>
+
+        <div class="output-section" v-if="outputText">
+          <h2>Output</h2>
+          <div class="output-field card">
+            <div class="output-content">
+              <pre>{{ outputText }}</pre>
+            </div>
+            <button 
+              @click="copyToClipboard" 
+              class="copy-button button"
+              :class="{ 'copied': isCopied }"
+              title="Copy to clipboard"
+            >
+              <font-awesome-icon :icon="isCopied ? faCheck : faCopy" class="icon" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -204,7 +305,7 @@ const toggleHistory = () => {
         <h2>History</h2>
         <div class="header-actions">
           <button @click="clearHistory" class="clear-history button" v-if="history.length > 0">
-            Clear
+            <font-awesome-icon :icon="faTrash" class="icon" />
           </button>
           <button 
             @click="toggleHistory" 
@@ -212,8 +313,7 @@ const toggleHistory = () => {
             :class="{ 'active': showHistory }"
             v-if="showHistory"
           >
-            <span class="sr-only">Close History</span>
-            ×
+            <font-awesome-icon :icon="faXmark" class="icon" />
           </button>
         </div>
       </div>
@@ -223,24 +323,29 @@ const toggleHistory = () => {
           No history yet
         </div>
         
-        <div class="history-list">
+        <div class="history-grid">
           <div 
             v-for="item in history" 
             :key="item.id" 
-            class="history-item card"
+            class="history-card"
             @click="loadHistoryItem(item)"
           >
-            <div class="history-item-header">
+            <div class="history-card-header">
               <span class="history-date">{{ formatDate(item.timestamp) }}</span>
               <div class="history-tags">
                 <span class="tag mood">{{ item.mood }}</span>
                 <span class="tag context">{{ item.context }}</span>
+                <span class="tag length">{{ item.length }}</span>
               </div>
             </div>
             
-            <div class="history-content">
-              <p class="history-input">{{ item.input }}</p>
-              <p class="history-output">{{ item.output }}</p>
+            <div class="history-card-content">
+              <div class="history-input">
+                <p>{{ item.input }}</p>
+              </div>
+              <div class="history-output">
+                <p>{{ item.output }}</p>
+              </div>
             </div>
           </div>
         </div>
@@ -259,12 +364,20 @@ const toggleHistory = () => {
   gap: 2rem;
 }
 
+@media (max-width: 768px) {
+  .container {
+    width: 100%;
+    margin: 2rem auto 0;
+  }
+}
+
 .main-content {
   flex: 1;
   min-width: 0;
 }
 
 .form-section {
+  margin-top: 2rem;
   margin-bottom: 2rem;
 }
 
@@ -339,6 +452,9 @@ const toggleHistory = () => {
     background: var(--border-color);
     color: var(--secondary-color);
   }
+  .keyboard-shortcut{
+    margin-left: 0.5rem;
+  }
 }
 
 .output-section {
@@ -346,14 +462,57 @@ const toggleHistory = () => {
 }
 
 .output-field {
+  position: relative;
   padding: 1.5rem;
   border-radius: 8px;
   overflow: auto;
   
-  pre {
-    margin: 0;
-    white-space: pre-wrap;
-    word-wrap: break-word;
+  .output-content {
+    margin-bottom: 1rem;
+    
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+  }
+
+  .copy-button {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    padding: 0.5rem;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all var(--transition-time);
+    background-color: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    
+    &:hover:not(.copied) {
+      color: var(--primary-color);
+      border-color: var(--primary-color);
+    }
+    
+    &.copied {
+      background-color: rgba(66, 185, 131, 0.1);
+      color: #42b883;
+      border-color: #42b883;
+      
+      .icon {
+        animation: checkmark 0.3s ease-out;
+      }
+    }
+  }
+}
+
+@keyframes checkmark {
+  0% {
+    transform: scale(0);
+  }
+  100% {
+    transform: scale(1);
   }
 }
 
@@ -370,6 +529,7 @@ const toggleHistory = () => {
   transform: translateX(0);
   transition: all var(--transition-time);
   z-index: 1000;
+  overflow-y: scroll;
   
   @media (max-width: 768px) {
     width: 100%;
@@ -393,35 +553,61 @@ const toggleHistory = () => {
     font-size: 1.25rem;
     margin-bottom: 0;
     color: var(--text-color);
-    font-weight: 500;
+    font-weight: 600;
   }
 }
 
-.history-list-wrapper {
+.header-actions {
   display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  max-height: 400px;
-  overflow-y: auto;
-  padding-right: 0.5rem;
-  
-  &::-webkit-scrollbar {
-    width: 8px;
-  }
-  
-  &::-webkit-scrollbar-track {
-    background: var(--input-bg);
-  }
-  
-  &::-webkit-scrollbar-thumb {
-    background: var(--border-color);
-    border-radius: 4px;
-  }
+  gap: 0.5rem;
+  align-items: center;
 }
 
-.history-item {
+.clear-history {
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
   cursor: pointer;
   transition: all var(--transition-time);
+  background-color: transparent;
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  
+  &:hover {
+    background-color: rgba(220, 53, 69, 0.1);
+    color: #dc3545;
+    border-color: #dc3545;
+  }
+}
+
+.close-button {
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all var(--transition-time);
+  background-color: transparent;
+  color: var(--text-color);
+  border: none;
+  
+  &:hover {
+    background-color: rgba(220, 53, 69, 0.1);
+    color: #dc3545;
+  }
+}
+
+.history-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.history-card {
+  background: var(--card-bg);
+  border-radius: 8px;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+  transition: all var(--transition-time);
+  cursor: pointer;
   
   &:hover {
     transform: translateY(-2px);
@@ -429,64 +615,146 @@ const toggleHistory = () => {
   }
 }
 
-.history-item-header {
+.history-card-header {
   display: flex;
+  flex-direction: column;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.75rem;
-  font-size: 0.9rem;
-}
-
-.history-date {
-  color: var(--secondary-color);
-  opacity: 0.8;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  
+  .history-date {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
 }
 
 .history-tags {
   display: flex;
   gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.history-card-content {
+  display: grid;
+  gap: 1rem;
+}
+
+.history-input,
+.history-output {  
+  p {
+    margin: 0;
+    color: var(--text-color);
+    font-size: 0.9rem;
+  }
+}
+.history-input {  
+  p {
+    color: var(--secondary-color);
+  }
+}
+
+
+.empty-history {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 2rem 0;
+}
+
+.icon {
+  width: 1em;
+  height: 1em;
 }
 
 .tag {
-  padding: 0.2rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.8rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
   
   &.mood {
-    background-color: rgba(38, 132, 255, 0.1);
-    color: var(--primary-color);
+    background-color: rgba(66, 155, 185, 0.1);
+    color: var(--secondary-color);
   }
   
   &.context {
     background-color: rgba(102, 102, 102, 0.1);
     color: var(--secondary-color);
   }
+  
+  &.length {
+    background-color: rgba(24, 137, 137, 0.1);
+    color: var(--secondary-color);
+  }
 }
 
-.history-content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+@media (max-width: 768px) {
+  .history-sidebar {
+    width: 100%;
+    padding: 1rem;
+  }
+
+  .history-card {
+    padding: 0.75rem;
+  }
+
+  .history-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .history-tags {
+    margin-top: 0.5rem;
+  }
 }
 
-.history-input {
+.input-with-actions {
+  position: relative;
+}
+
+.clear-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all var(--transition-time);
+  background-color: transparent;
   color: var(--text-color);
-  opacity: 0.8;
+  border: 1px solid var(--border-color);
+  
+  &:hover:not(:disabled) {
+    background-color: rgba(220, 53, 69, 0.1);
+    color: #dc3545;
+    border-color: #dc3545;
+  }
+  
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 }
 
-.history-output {
-  color: var(--primary-color);
-  font-weight: 500;
-}
-
-.empty-history {
-  padding: 1.5rem;
+.error-message {
+  margin-top: 0.5rem;
+  padding: 1rem;
+  border-radius: 4px;
+  background-color: rgba(220, 53, 69, 0.1);
+  color: #dc3545;
+  font-size: 0.875rem;
   text-align: center;
-  color: var(--secondary-color);
-  opacity: 0.7;
-  font-style: italic;
-  background-color: var(--input-bg);
-  border-radius: 6px;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
 .mobile-menu-button {
@@ -511,39 +779,6 @@ const toggleHistory = () => {
   
   @media (max-width: 768px) {
     display: block;
-  }
-}
-
-@media (max-width: 768px) {
-  .container {
-    padding: 1rem;
-    width: 100%;
-    margin: 2.5rem 0 0 0;
-    max-width: none;
-  }
-
-  .main-content {
-    flex: none;
-    width: 100%;
-  }
-
-  .history-sidebar {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 100%;
-    border-radius: 0;
-    box-shadow: none;
-    transform: translateX(100%);
-    
-    &.show {
-      transform: translateX(0);
-    }
-  }
-
-  .history-list-wrapper {
-    max-height: calc(100vh - 100px);
   }
 }
 </style>
